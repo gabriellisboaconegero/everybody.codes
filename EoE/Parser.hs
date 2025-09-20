@@ -133,18 +133,36 @@ instance Treeable [Char] [Char] where
 
 -- Parse a binary operation in right associative order
 rightBinOpExpr :: (Eq i, Eq e, Treeable a b) => Parser i e a -> Parser i e b -> Parser i e a
--- E := T <op> E | T
-rightBinOpExpr term op = join <$> (term <~> (op <~> (rightBinOpExpr term op <|> term))) <|> term
-  where
-    join (lhs, (op, rhs)) = node lhs op rhs
+-- E ::= T <op> E | T <=> E ::= (T <op>)* T
+rightBinOpExpr term op =
+  let
+    fold_ (ts, t) = foldr (\(lhs, op) rhs -> node lhs op rhs) t ts
+  in fold_ <$> (many (term <~> op) <~> term)
+-- rightBinOpExpr term op = join <$> (term <~> (op <~> (rightBinOpExpr term op <|> term))) <|> term
+--   where
+--     join (lhs, (op, rhs)) = node lhs op rhs
+
+rightBinOpExpr1 :: (Eq i, Eq e, Treeable a b) => Parser i e a -> Parser i e b -> Parser i e a
+-- E ::= T <op> E | T <op> T <=> E ::= (T <op>)+ T
+rightBinOpExpr1 term op =
+  let
+    fold_ (ts, t) = foldr (\(lhs, op) rhs -> node lhs op rhs) t ts
+  in fold_ <$> (some (term <~> op) <~> term)
 
 -- Parse a binary operation in left associative order
--- E := T (E <op>)*
+-- E ::= T (<op> T)*
 leftBinOpExpr :: (Eq i, Eq e, Treeable a b) => Parser i e a -> Parser i e b -> Parser i e a
 leftBinOpExpr term op =
   let
     fold_ (t, ts) = foldl (\lhs (op, rhs) -> node lhs op rhs) t ts
   in fold_ <$> (term <~> many (op <~> term))
+
+-- E ::= T (<op> T)+
+leftBinOpExpr1 :: (Eq i, Eq e, Treeable a b) => Parser i e a -> Parser i e b -> Parser i e a
+leftBinOpExpr1 term op =
+  let
+    fold_ (t, ts) = foldl (\lhs (op, rhs) -> node lhs op rhs) t ts
+  in fold_ <$> (term <~> some (op <~> term))
 
 -- many, some, optional defined in Alternative
 option :: Alternative f => a -> f a -> f a
@@ -193,17 +211,26 @@ instance Monad (Parser i e) where
     runParser (k output) rest offset'
 
 -- OR with backtraking. Be careful, recursion with to the left
-(<||>) :: (Eq i, Eq e) => Parser i e a -> Parser i e a -> Parser i e a
+-- (<||>) :: (Eq i, Eq e) => Parser i e a -> Parser i e a -> Parser i e a
+-- Parser l <||> Parser r = Parser $ \input offset ->
+--   case l input offset of
+--     Left err ->
+--       case r input offset of
+--         Left err' -> Left $ nub $ err <> err'
+--         Right result2 -> Right result2
+--     Right result1@(_, off1, _) ->
+--       case r input offset of
+--         Left err' -> Right result1
+--         Right result2@(_, off2, _) -> Right (if off1 > off2 then result1 else result2)
+
+(<||>) :: (Eq i, Eq e) => Parser i e a -> Parser i e b -> Parser i e (Either a b)
 Parser l <||> Parser r = Parser $ \input offset ->
   case l input offset of
     Left err ->
       case r input offset of
         Left err' -> Left $ nub $ err <> err'
-        Right result2 -> Right result2
-    Right result1@(_, off1, _) ->
-      case r input offset of
-        Left err' -> Right result1
-        Right result2@(_, off2, _) -> Right (if off1 > off2 then result1 else result2)
+        Right (b, off, rest) -> Right (Right b, off, rest)
+    Right (a, off, rest) -> Right (Left a, off, rest)
 
 instance (Eq i, Eq e) => Alternative (Parser i e) where
   empty = Parser $ \_ offset -> Left [Error offset Empty]
